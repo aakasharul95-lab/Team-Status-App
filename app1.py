@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime
 
 # --- CONFIGURATION ---
-# Password to clear the board at the end of the day
 ADMIN_PASSWORD = "admin" 
 
 # The list of people from your screenshot
@@ -27,16 +26,14 @@ TEAM_MEMBERS = [
 ]
 
 # --- PAGE SETUP ---
-st.set_page_config(page_title="Team Status Board", layout="wide")
+st.set_page_config(page_title="SPAE AD&E Availability", layout="wide")
 
 # --- INITIALIZE DATA ---
-# This creates a blank table if one doesn't exist yet
 if 'team_data' not in st.session_state:
-    # Create a default dataframe
     default_data = {
         'Name': TEAM_MEMBERS,
         'Status': ['❓ Not Updated'] * len(TEAM_MEMBERS),
-        'Location': ['Unknown'] * len(TEAM_MEMBERS),
+        # Location column removed here
         'Reason/Comment': [''] * len(TEAM_MEMBERS),
         'Last Updated': [''] * len(TEAM_MEMBERS)
     }
@@ -46,10 +43,10 @@ if 'team_data' not in st.session_state:
 st.sidebar.header("📝 Update Your Status")
 user_name = st.sidebar.selectbox("Who are you?", TEAM_MEMBERS)
 
-# Status Options
+# Status Options (Added Symbol to Workshop)
 status_main = st.sidebar.radio(
     "Where are you today?", 
-    ["🏢 Office", "🏠 WFH", "🤒 Sick/Away", "Workshop"]
+    ["🏢 Office", "🏠 WFH", "🤒 Sick/Away", "🛠️ Workshop"]
 )
 
 # Optional Comment
@@ -78,30 +75,35 @@ if st.sidebar.checkbox("Show Reset Button"):
     pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
         if st.sidebar.button("🗑️ Reset Board for New Day"):
+            # Reset columns to default
             st.session_state['team_data']['Status'] = '❓ Not Updated'
             st.session_state['team_data']['Reason/Comment'] = ''
             st.session_state['team_data']['Last Updated'] = ''
             st.rerun()
 
 # --- MAIN DASHBOARD ---
-st.title("📍 Team Availability Board")
-st.markdown(f"**Date:** {datetime.now().strftime('%Y-%m-%d')}")
+# Title updated to include Todays Date dynamically
+today_date = datetime.now().strftime('%Y-%m-%d')
+st.title(f"SPAE AD&E Availability on {today_date}")
 
-# Display the Dataframe with styling
+# Display the Dataframe
 df_display = st.session_state['team_data']
 
-# Define a function to color the rows based on status
+# Define coloring logic
 def highlight_status(val):
     color = ''
-    if 'WFH' in str(val):
+    val_str = str(val)
+    if 'WFH' in val_str:
         color = 'background-color: #d1e7dd; color: black' # Greenish
-    elif 'Sick' in str(val):
+    elif 'Sick' in val_str:
         color = 'background-color: #f8d7da; color: black' # Reddish
-    elif 'Office' in str(val):
+    elif 'Office' in val_str:
         color = 'background-color: #cff4fc; color: black' # Blueish
+    elif 'Workshop' in val_str:
+        color = 'background-color: #fff3cd; color: black' # Yellowish for Workshop
     return color
 
-# Apply the styling
+# Apply styling
 styled_df = df_display.style.applymap(highlight_status, subset=['Status'])
 
 # Show the table
@@ -112,6 +114,6 @@ st.dataframe(
     hide_index=True
 )
 
-# Add a refresh button just in case
+# Refresh button
 if st.button("🔄 Refresh Board"):
     st.rerun()
