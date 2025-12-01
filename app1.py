@@ -1,3 +1,6 @@
+import subprocess
+import sys
+subprocess.check_call([sys.executable, "-m", "pip", "install", "st-gsheets-connection"])
 import streamlit as st
 import pandas as pd
 from datetime import datetime
@@ -98,4 +101,5 @@ st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
 
 if st.button("🔄 Refresh Board"):
     st.rerun()
+
 
