@@ -1,44 +1,35 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-import pytz # New library for timezones
+import pytz
+from streamlit_gsheets import GSheetsConnection
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin" 
-
-# SET TIMEZONE TO SWEDEN
 sweden_tz = pytz.timezone('Europe/Stockholm')
-
-TEAM_MEMBERS = [
-    "Niclas Axelsson (Manager)",
-    "Anna Penalosa",
-    "Jukka Kvarnström",
-    "Aakash Arul",
-    "Tony Nilsson",
-    "Niklas Brikell",
-    "Ting Ma",
-    "Niclas Larsson",
-    "Kjell-Ove Johannesson",
-    "Kenny Leandersson",
-    "Tobias Persson",
-    "Angelo Dárro",
-    "Viktor Borgström",
-    "Jozsef Kovacs",
-    "Kemal Veispahic",
-    "Lennart Olausson"
-]
 
 st.set_page_config(page_title="SPAE AD&E Availability", layout="wide")
 
-# --- INITIALIZE DATA ---
-if 'team_data' not in st.session_state:
-    default_data = {
-        'Name': TEAM_MEMBERS,
-        'Status': ['❓ Not Updated'] * len(TEAM_MEMBERS),
-        'Reason/Comment': [''] * len(TEAM_MEMBERS),
-        'Last Updated': [''] * len(TEAM_MEMBERS)
-    }
-    st.session_state['team_data'] = pd.DataFrame(default_data)
+# --- CONNECT TO GOOGLE SHEET ---
+conn = st.connection("gsheets", type=GSheetsConnection)
+
+# Read the data directly from the Google Sheet
+# ttl=0 means "don't cache", fetch fresh data every time we reload
+try:
+    df = conn.read(worksheet="Sheet1", ttl=0)
+    # Ensure columns exist to prevent errors if sheet is empty
+    expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
+    for col in expected_cols:
+        if col not in df.columns:
+            df[col] = ''
+    # Fill NaN values with empty strings for clean display
+    df = df.fillna('')
+except Exception as e:
+    st.error("Could not connect to Google Sheet. Check Secrets.")
+    st.stop()
+
+# List of team members comes directly from the Sheet now
+TEAM_MEMBERS = df['Name'].tolist()
 
 # --- SIDEBAR: UPDATE STATUS ---
 st.sidebar.header("📝 Update Your Status")
@@ -52,16 +43,19 @@ status_main = st.sidebar.radio(
 comment = st.sidebar.text_input("Reason / Comment (Optional)", placeholder="e.g. Waiting for delivery")
 
 if st.sidebar.button("Update Status"):
-    df = st.session_state['team_data']
-    index = df.index[df['Name'] == user_name][0]
+    # 1. Find the row index for the selected user
+    # We look inside the dataframe we just pulled from Google
+    row_index = df.index[df['Name'] == user_name][0]
     
-    df.at[index, 'Status'] = status_main
-    df.at[index, 'Reason/Comment'] = comment
-    # FIX: Use Sweden time for the timestamp
-    df.at[index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%H:%M")
+    # 2. Update the data in memory
+    df.at[row_index, 'Status'] = status_main
+    df.at[row_index, 'Reason/Comment'] = comment
+    df.at[row_index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%H:%M")
     
-    st.session_state['team_data'] = df
-    st.sidebar.success("Updated!")
+    # 3. Push the update back to Google Sheets
+    conn.update(worksheet="Sheet1", data=df)
+    st.sidebar.success("Updated! Refreshing...")
+    st.rerun()
 
 # --- SIDEBAR: MANAGER RESET ---
 st.sidebar.markdown("---")
@@ -70,18 +64,20 @@ if st.sidebar.checkbox("Show Reset Button"):
     pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
         if st.sidebar.button("🗑️ Reset Board for New Day"):
-            st.session_state['team_data']['Status'] = '❓ Not Updated'
-            st.session_state['team_data']['Reason/Comment'] = ''
-            st.session_state['team_data']['Last Updated'] = ''
+            # Reset columns in the dataframe
+            df['Status'] = '❓ Not Updated'
+            df['Reason/Comment'] = ''
+            df['Last Updated'] = ''
+            
+            # Push clean data to Google Sheets
+            conn.update(worksheet="Sheet1", data=df)
             st.rerun()
 
 # --- MAIN DASHBOARD ---
-# FIX: Use Sweden time for the Date Title
 today_date = datetime.now(sweden_tz).strftime('%Y-%m-%d')
 st.title(f"SPAE AD&E Availability on {today_date}")
 
-df_display = st.session_state['team_data']
-
+# Styling
 def highlight_status(val):
     color = ''
     val_str = str(val)
@@ -95,9 +91,11 @@ def highlight_status(val):
         color = 'background-color: #fff3cd; color: black'
     return color
 
-styled_df = df_display.style.applymap(highlight_status, subset=['Status'])
+# Display the table from the dataframe
+styled_df = df.style.applymap(highlight_status, subset=['Status'])
 
 st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
 
 if st.button("🔄 Refresh Board"):
     st.rerun()
+
