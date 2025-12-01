@@ -15,8 +15,8 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 try:
     df = conn.read(worksheet="Sheet1", ttl=0)
-    # Ensure all columns exist
-    expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm']
+    # Added 'LastReset' to expected columns
+    expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm', 'LastReset']
     for col in expected_cols:
         if col not in df.columns:
             df[col] = ''
@@ -27,63 +27,84 @@ except Exception as e:
 
 TEAM_MEMBERS = df['Name'].tolist()
 
+# --- 🤖 AUTOMATIC RESET LOGIC (The Magic Part) ---
+current_sweden_time = datetime.now(sweden_tz)
+today_str = current_sweden_time.strftime('%Y-%m-%d')
+
+# Get the last reset date from the first row (Cell F2)
+last_reset_recorded = str(df.at[0, 'LastReset'])
+
+# CHECK: Is it after 4 AM? AND Did we already reset today?
+if current_sweden_time.hour >= 4 and last_reset_recorded != today_str:
+    
+    # Perform the Reset
+    changes_made = False
+    for index, row in df.iterrows():
+        # Skip Long-Term / Vacation
+        if row['IsLongTerm'] != "Yes":
+            # Only update if it actually needs clearing to save API calls
+            if row['Status'] != '❓ Not Updated':
+                df.at[index, 'Status'] = '❓ Not Updated'
+                df.at[index, 'Reason/Comment'] = ''
+                df.at[index, 'Last Updated'] = ''
+                changes_made = True
+    
+    # Mark that we have reset for today (Update F2)
+    # We write it to the first row's 'LastReset' column
+    df.at[0, 'LastReset'] = today_str
+    
+    # Save to Google Sheet
+    conn.update(worksheet="Sheet1", data=df)
+    
+    # Show a message and reload
+    st.toast("🌅 Good Morning! Board automatically reset for the day.")
+    st.rerun()
+
 # --- SIDEBAR: UPDATE STATUS ---
 st.sidebar.header("📝 Update Your Status")
 user_name = st.sidebar.selectbox("Who are you?", TEAM_MEMBERS)
 
 status_main = st.sidebar.radio(
     "Where are you today?", 
-    ["🏢 Office", "🏠 WFH", "🤒 Sick/Away", "🛠️ Workshop"]
+    ["🏢 Office", "🏠 WFH", "🤒 Sick/Away", "🛠️ Workshop", "🏖️ Vacation"]
 )
 
-comment = st.sidebar.text_input("Reason / Comment", placeholder="e.g. Vacation until Monday")
+comment = st.sidebar.text_input("Reason / Comment", placeholder="e.g. Back on Monday")
 
-# --- THE LONG TERM CHECKBOX ---
-# If you check this, the Manager's reset button CANNOT touch your status.
-is_long_term = st.sidebar.checkbox("🔒 Long-term (Protect from Daily Reset)")
+# CHECKBOX
+is_long_term = st.sidebar.checkbox("🔒 Long-term (Protect from Reset)")
 
 if st.sidebar.button("Update Status"):
     row_index = df.index[df['Name'] == user_name][0]
     
-    # Update the data
     df.at[row_index, 'Status'] = status_main
     df.at[row_index, 'Reason/Comment'] = comment
     df.at[row_index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%Y-%m-%d %H:%M")
-    
-    # LOGIC: If checked, save "Yes". If unchecked, save "No".
-    # Saving "No" is how you 'delete' the long-term status when you get back.
     df.at[row_index, 'IsLongTerm'] = "Yes" if is_long_term else "No"
     
     conn.update(worksheet="Sheet1", data=df)
     st.sidebar.success("Updated! Refreshing...")
     st.rerun()
 
-# --- SIDEBAR: MANAGER RESET ---
+# --- SIDEBAR: MANAGER RESET (Backup) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("Manager Tools")
 if st.sidebar.checkbox("Show Reset Button"):
     pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
-        if st.sidebar.button("🗑️ Reset Board (Respects Long-term)"):
-            
-            # --- MANAGER LOGIC ---
-            # We loop through every person.
+        if st.sidebar.button("Force Reset Board"):
             for index, row in df.iterrows():
-                # We ONLY reset them if they did NOT check the Long-term box.
                 if row['IsLongTerm'] != "Yes":
                     df.at[index, 'Status'] = '❓ Not Updated'
                     df.at[index, 'Reason/Comment'] = ''
                     df.at[index, 'Last Updated'] = ''
-            
             conn.update(worksheet="Sheet1", data=df)
-            st.success("Board Reset! (Long-term entries were protected)")
+            st.success("Board Reset Manually.")
             st.rerun()
 
 # --- MAIN DASHBOARD ---
-today_date = datetime.now(sweden_tz).strftime('%Y-%m-%d')
 st.title(f"SPAE AD&E Availability on {today_date}")
 
-# Styling
 def highlight_status(val):
     color = ''
     val_str = str(val)
@@ -95,9 +116,11 @@ def highlight_status(val):
         color = 'background-color: #cff4fc; color: black'
     elif 'Workshop' in val_str:
         color = 'background-color: #fff3cd; color: black'
+    elif 'Vacation' in val_str:
+        color = 'background-color: #ffe5d0; color: black'
     return color
 
-# We hide the 'IsLongTerm' column so the table looks clean
+# Hide technical columns
 display_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
 styled_df = df[display_cols].style.applymap(highlight_status, subset=['Status'])
 
