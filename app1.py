@@ -13,22 +13,18 @@ st.set_page_config(page_title="SPAE AD&E Availability", layout="wide")
 # --- CONNECT TO GOOGLE SHEET ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Read the data directly from the Google Sheet
-# ttl=0 means "don't cache", fetch fresh data every time we reload
 try:
     df = conn.read(worksheet="Sheet1", ttl=0)
-    # Ensure columns exist to prevent errors if sheet is empty
-    expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
+    # Ensure all columns exist
+    expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm']
     for col in expected_cols:
         if col not in df.columns:
             df[col] = ''
-    # Fill NaN values with empty strings for clean display
     df = df.fillna('')
 except Exception as e:
     st.error("Could not connect to Google Sheet. Check Secrets.")
     st.stop()
 
-# List of team members comes directly from the Sheet now
 TEAM_MEMBERS = df['Name'].tolist()
 
 # --- SIDEBAR: UPDATE STATUS ---
@@ -40,19 +36,24 @@ status_main = st.sidebar.radio(
     ["🏢 Office", "🏠 WFH", "🤒 Sick/Away", "🛠️ Workshop"]
 )
 
-comment = st.sidebar.text_input("Reason / Comment (Optional)", placeholder="e.g. Waiting for delivery")
+comment = st.sidebar.text_input("Reason / Comment", placeholder="e.g. Vacation until Monday")
+
+# --- THE LONG TERM CHECKBOX ---
+# If you check this, the Manager's reset button CANNOT touch your status.
+is_long_term = st.sidebar.checkbox("🔒 Long-term (Protect from Daily Reset)")
 
 if st.sidebar.button("Update Status"):
-    # 1. Find the row index for the selected user
-    # We look inside the dataframe we just pulled from Google
     row_index = df.index[df['Name'] == user_name][0]
     
-    # 2. Update the data in memory
+    # Update the data
     df.at[row_index, 'Status'] = status_main
     df.at[row_index, 'Reason/Comment'] = comment
-    df.at[row_index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%H:%M")
+    df.at[row_index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%Y-%m-%d %H:%M")
     
-    # 3. Push the update back to Google Sheets
+    # LOGIC: If checked, save "Yes". If unchecked, save "No".
+    # Saving "No" is how you 'delete' the long-term status when you get back.
+    df.at[row_index, 'IsLongTerm'] = "Yes" if is_long_term else "No"
+    
     conn.update(worksheet="Sheet1", data=df)
     st.sidebar.success("Updated! Refreshing...")
     st.rerun()
@@ -63,14 +64,19 @@ st.sidebar.subheader("Manager Tools")
 if st.sidebar.checkbox("Show Reset Button"):
     pwd = st.sidebar.text_input("Admin Password", type="password")
     if pwd == ADMIN_PASSWORD:
-        if st.sidebar.button("🗑️ Reset Board for New Day"):
-            # Reset columns in the dataframe
-            df['Status'] = '❓ Not Updated'
-            df['Reason/Comment'] = ''
-            df['Last Updated'] = ''
+        if st.sidebar.button("🗑️ Reset Board (Respects Long-term)"):
             
-            # Push clean data to Google Sheets
+            # --- MANAGER LOGIC ---
+            # We loop through every person.
+            for index, row in df.iterrows():
+                # We ONLY reset them if they did NOT check the Long-term box.
+                if row['IsLongTerm'] != "Yes":
+                    df.at[index, 'Status'] = '❓ Not Updated'
+                    df.at[index, 'Reason/Comment'] = ''
+                    df.at[index, 'Last Updated'] = ''
+            
             conn.update(worksheet="Sheet1", data=df)
+            st.success("Board Reset! (Long-term entries were protected)")
             st.rerun()
 
 # --- MAIN DASHBOARD ---
@@ -91,8 +97,9 @@ def highlight_status(val):
         color = 'background-color: #fff3cd; color: black'
     return color
 
-# Display the table from the dataframe
-styled_df = df.style.applymap(highlight_status, subset=['Status'])
+# We hide the 'IsLongTerm' column so the table looks clean
+display_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
+styled_df = df[display_cols].style.applymap(highlight_status, subset=['Status'])
 
 st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
 
