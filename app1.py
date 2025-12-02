@@ -36,52 +36,59 @@ try:
         if col not in df.columns:
             df[col] = ''
     
-    # Fill empty cells to avoid errors
     df = df.fillna('')
     
-    # FIX 1: Filter out rows where Name is empty (Removes the blank lines)
-    df = df[df['Name'].str.strip() != '']
+    # STRICT FILTERING: Remove empty rows
+    df['Name'] = df['Name'].astype(str)
+    df['Name'] = df['Name'].str.strip()
+    df = df[df['Name'].str.len() > 0]
+    df = df[df['Name'] != 'nan']
 
 except Exception as e:
-    st.error("Data structure error. Check Google Sheet columns.")
+    st.error(f"Data structure error: {e}")
     st.stop()
 
-# --- 🤖 AUTOMATIC RESET LOGIC ---
+# --- 🤖 AUTOMATIC RESET LOGIC (UPDATED TO 16:30 / 4:30 PM) ---
 current_sweden_time = datetime.now(sweden_tz)
 today_str = current_sweden_time.strftime('%Y-%m-%d')
 
-# Handle case where sheet is empty or LastReset column is missing data
 if not df.empty:
-    last_reset_recorded = str(df.at[df.index[0], 'LastReset'])
+    first_index = df.index[0]
+    last_reset_recorded = str(df.at[first_index, 'LastReset'])
 else:
     last_reset_recorded = ""
 
-if current_sweden_time.hour >= 4 and last_reset_recorded != today_str and not df.empty:
+# LOGIC: Check if it is past 16:30 (4:30 PM) AND we haven't reset today yet
+# hour > 16 means 17:00 (5 PM) or later
+# hour == 16 and minute >= 30 means 16:30 to 16:59
+is_past_cutoff = (current_sweden_time.hour > 16) or (current_sweden_time.hour == 16 and current_sweden_time.minute >= 30)
+
+if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
     for index, row in df.iterrows():
+        # Skip Long-Term / Vacation
         if row['IsLongTerm'] != "Yes":
             if row['Status'] != '❓ Not Updated':
                 df.at[index, 'Status'] = '❓ Not Updated'
                 df.at[index, 'Reason/Comment'] = ''
                 df.at[index, 'Last Updated'] = ''
     
-    # Update the reset date in the first row
+    # Mark reset as done for today
     if not df.empty:
         df.at[df.index[0], 'LastReset'] = today_str
         
     conn.update(worksheet="Sheet1", data=df)
-    st.toast("🌅 Good Morning! Board automatically reset.")
+    st.toast("🧹 End of Day: Board automatically reset (16:30+)")
     st.rerun()
 
 # --- SIDEBAR: TEAM SELECTION ---
 st.sidebar.header("👥 Select Team")
 
-all_teams = [t for t in df['Team'].unique() if t != '']
+all_teams = [t for t in df['Team'].unique() if str(t).strip() != '' and str(t) != 'nan']
 if not all_teams:
     all_teams = ["No Teams Found"]
 
 selected_team = st.sidebar.selectbox("View Board For:", all_teams)
 
-# Filter data for the selected team
 team_df = df[df['Team'] == selected_team]
 team_members = team_df['Name'].tolist()
 
@@ -89,7 +96,6 @@ team_members = team_df['Name'].tolist()
 st.sidebar.markdown("---")
 st.sidebar.header("📝 Update Your Status")
 
-# If team is empty, show a warning instead of crashing
 if not team_members:
     st.sidebar.warning("No members found in this team.")
 else:
@@ -104,7 +110,6 @@ else:
     is_long_term = st.sidebar.checkbox("🔒 Long-term (Protect from Reset)")
 
     if st.sidebar.button("Update Status"):
-        # Find row in main dataframe
         row_index = df.index[df['Name'] == user_name][0]
         
         df.at[row_index, 'Status'] = status_main
@@ -127,7 +132,6 @@ if st.sidebar.checkbox("Show Reset Button"):
     if pwd == ADMIN_PASSWORD:
         if st.sidebar.button(f"Reset {selected_team} Board"):
             for index, row in df.iterrows():
-                # Only reset members of the selected team who are NOT long-term
                 if row['Team'] == selected_team and row['IsLongTerm'] != "Yes":
                     df.at[index, 'Status'] = '❓ Not Updated'
                     df.at[index, 'Reason/Comment'] = ''
@@ -137,7 +141,6 @@ if st.sidebar.checkbox("Show Reset Button"):
             st.rerun()
 
 # --- MAIN DASHBOARD ---
-# FIX 2: Added the date back to the main title
 st.title(f"{selected_team} Availability on {today_str}")
 
 def highlight_status(val):
@@ -155,7 +158,6 @@ def highlight_status(val):
         color = 'background-color: #ffe5d0; color: black'
     return color
 
-# Show the table
 if not team_df.empty:
     display_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
     styled_df = team_df[display_cols].style.applymap(highlight_status, subset=['Status'])
@@ -182,6 +184,7 @@ with col2:
     if st.session_state['egg_clicks'] >= 5:
         st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
         st.session_state['egg_clicks'] = 0
+
 
 
 
