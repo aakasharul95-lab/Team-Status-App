@@ -15,11 +15,11 @@ st.set_page_config(page_title="Team Availability Board", layout="wide")
 # --- CONNECT TO GOOGLE SHEET ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def load_data_with_retry():
+def fetch_google_data():
     max_retries = 3
     for i in range(max_retries):
         try:
-            # FIX 2: We use ttl=0 here so updates are instant when we force a reload
+            # We use ttl=0 to get fresh data, BUT we control when we call this function
             df = conn.read(worksheet="Sheet1", ttl=0)
             return df
         except Exception as e:
@@ -29,7 +29,13 @@ def load_data_with_retry():
                 st.error("Google Sheets is busy. Please wait a moment and refresh.")
                 st.stop()
 
-df = load_data_with_retry()
+# --- INTELLIGENT DATA LOADING (THE FIX) ---
+# Only fetch from Google if we don't have it in memory yet
+if 'data_frame' not in st.session_state:
+    st.session_state.data_frame = fetch_google_data()
+
+# Use the data from memory
+df = st.session_state.data_frame
 
 # --- DATA CLEANING ---
 try:
@@ -71,7 +77,9 @@ if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
         df.at[df.index[0], 'LastReset'] = today_str
         
     conn.update(worksheet="Sheet1", data=df)
-    st.cache_data.clear() # Clear cache to ensure fresh data
+    
+    # Force reload of data in memory
+    del st.session_state['data_frame']
     st.toast("🧹 End of Day: Board automatically reset (16:30+)")
     st.rerun()
 
@@ -82,7 +90,6 @@ all_teams = [t for t in df['Team'].unique() if str(t).strip() != '' and str(t) !
 if not all_teams:
     all_teams = ["No Teams Found"]
 
-# Helper function to prevent reset on selection change
 if 'selected_team_idx' not in st.session_state:
     st.session_state.selected_team_idx = 0
 
@@ -127,11 +134,13 @@ else:
         if df.at[row_index, 'Team'] == '':
             df.at[row_index, 'Team'] = selected_team
 
-        # FIX 2: Clear cache immediately before rerun
         conn.update(worksheet="Sheet1", data=df)
-        st.cache_data.clear() 
+        
+        # Clear memory so next run fetches fresh data
+        del st.session_state['data_frame']
+        
         st.sidebar.success("Updated!")
-        time.sleep(0.5) # Slight pause to let Google process
+        time.sleep(0.5) 
         st.rerun()
 
 # --- SIDEBAR: MANAGER RESET ---
@@ -147,7 +156,7 @@ if st.sidebar.checkbox("Show Reset Button"):
                     df.at[index, 'Reason/Comment'] = ''
                     df.at[index, 'Last Updated'] = ''
             conn.update(worksheet="Sheet1", data=df)
-            st.cache_data.clear()
+            del st.session_state['data_frame'] # Clear memory
             st.success(f"Reset complete for {selected_team}!")
             time.sleep(0.5)
             st.rerun()
@@ -185,10 +194,11 @@ else:
     st.info("No members in this team yet.")
 
 if st.button("🔄 Refresh Board"):
+    if 'data_frame' in st.session_state:
+        del st.session_state['data_frame']
     st.rerun()
 
-# --- EASTER EGG (FIXED JUMPING) ---
-# FIX 1: Using an empty container at the bottom keeps layout stable
+# --- EASTER EGG (Stable & Fast) ---
 bottom_container = st.container()
 with bottom_container:
     st.markdown("---")
@@ -206,7 +216,6 @@ with bottom_container:
         if st.session_state['egg_clicks'] >= 5:
             st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
             st.session_state['egg_clicks'] = 0
-
 
 
 
