@@ -7,7 +7,11 @@ from streamlit_gsheets import GSheetsConnection
 import numpy as np
 
 # --- CONFIGURATION ---
-ADMIN_PASSWORD = "admin" 
+try:
+    ADMIN_PASSWORD = st.secrets["admin_password"]
+except:
+    ADMIN_PASSWORD = "admin" # Fallback if secrets not set
+
 sweden_tz = pytz.timezone('Europe/Stockholm')
 
 st.set_page_config(page_title="Team Availability Board", layout="wide")
@@ -19,7 +23,6 @@ def fetch_google_data():
     max_retries = 3
     for i in range(max_retries):
         try:
-            # We use ttl=0 to get fresh data, BUT we control when we call this function
             df = conn.read(worksheet="Sheet1", ttl=0)
             return df
         except Exception as e:
@@ -29,12 +32,10 @@ def fetch_google_data():
                 st.error("Google Sheets is busy. Please wait a moment and refresh.")
                 st.stop()
 
-# --- INTELLIGENT DATA LOADING (THE FIX) ---
-# Only fetch from Google if we don't have it in memory yet
+# --- INTELLIGENT DATA LOADING ---
 if 'data_frame' not in st.session_state:
     st.session_state.data_frame = fetch_google_data()
 
-# Use the data from memory
 df = st.session_state.data_frame
 
 # --- DATA CLEANING ---
@@ -45,15 +46,18 @@ try:
             df[col] = ''
     
     df = df.fillna('')
+    # Clean names
     df['Name'] = df['Name'].astype(str).str.strip()
     df['Name'] = df['Name'].replace(['', 'nan', 'None'], np.nan)
+    
+    # Drop invalid rows for the table view
     df = df.dropna(subset=['Name'])
 
 except Exception as e:
     st.error(f"Data structure error: {e}")
     st.stop()
 
-# --- 🤖 AUTOMATIC RESET LOGIC ---
+# --- 🤖 AUTOMATIC RESET LOGIC (16:30 / 4:30 PM) ---
 current_sweden_time = datetime.now(sweden_tz)
 today_str = current_sweden_time.strftime('%Y-%m-%d')
 
@@ -77,8 +81,6 @@ if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
         df.at[df.index[0], 'LastReset'] = today_str
         
     conn.update(worksheet="Sheet1", data=df)
-    
-    # Force reload of data in memory
     del st.session_state['data_frame']
     st.toast("🧹 End of Day: Board automatically reset (16:30+)")
     st.rerun()
@@ -103,6 +105,7 @@ selected_team = st.sidebar.selectbox(
     on_change=update_team_idx
 )
 
+# Filter for the selected team
 team_df = df[df['Team'] == selected_team]
 team_members = team_df['Name'].tolist()
 
@@ -135,10 +138,7 @@ else:
             df.at[row_index, 'Team'] = selected_team
 
         conn.update(worksheet="Sheet1", data=df)
-        
-        # Clear memory so next run fetches fresh data
         del st.session_state['data_frame']
-        
         st.sidebar.success("Updated!")
         time.sleep(0.5) 
         st.rerun()
@@ -156,7 +156,7 @@ if st.sidebar.checkbox("Show Reset Button"):
                     df.at[index, 'Reason/Comment'] = ''
                     df.at[index, 'Last Updated'] = ''
             conn.update(worksheet="Sheet1", data=df)
-            del st.session_state['data_frame'] # Clear memory
+            del st.session_state['data_frame']
             st.success(f"Reset complete for {selected_team}!")
             time.sleep(0.5)
             st.rerun()
@@ -164,6 +164,29 @@ if st.sidebar.checkbox("Show Reset Button"):
 # --- MAIN DASHBOARD ---
 st.title(f"{selected_team} Availability on {today_str}")
 
+# --- SUMMARY METRICS ---
+if not team_df.empty:
+    m1, m2, m3, m4, m5 = st.columns(5)
+    
+    with m1:
+        count = len(team_df[team_df['Status'].str.contains("Office", na=False)])
+        st.metric("🏢 Office", count)
+    with m2:
+        count = len(team_df[team_df['Status'].str.contains("WFH", na=False)])
+        st.metric("🏠 WFH", count)
+    with m3:
+        count = len(team_df[team_df['Status'].str.contains("Sick", na=False)])
+        st.metric("🤒 Sick", count)
+    with m4:
+        count = len(team_df[team_df['Status'].str.contains("Workshop", na=False)])
+        st.metric("🛠️ Workshop", count)
+    with m5:
+        count = len(team_df[team_df['Status'].str.contains("Vacation", na=False)])
+        st.metric("🏖️ Vacation", count)
+    
+    st.markdown("---")
+
+# --- TABLE DISPLAY ---
 def highlight_status(val):
     color = ''
     val_str = str(val)
@@ -198,7 +221,7 @@ if st.button("🔄 Refresh Board"):
         del st.session_state['data_frame']
     st.rerun()
 
-# --- EASTER EGG (Stable & Fast) ---
+# --- EASTER EGG ---
 bottom_container = st.container()
 with bottom_container:
     st.markdown("---")
