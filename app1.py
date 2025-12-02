@@ -4,6 +4,7 @@ from datetime import datetime
 import pytz
 import time
 from streamlit_gsheets import GSheetsConnection
+import numpy as np
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin" 
@@ -11,43 +12,38 @@ sweden_tz = pytz.timezone('Europe/Stockholm')
 
 st.set_page_config(page_title="Team Availability Board", layout="wide")
 
-# --- CONNECT TO GOOGLE SHEET (WITH RETRY) ---
+# --- CONNECT TO GOOGLE SHEET (WITH CACHING TO FIX BUSY ERROR) ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data_with_retry():
     max_retries = 3
     for i in range(max_retries):
         try:
-            df = conn.read(worksheet="Sheet1", ttl=0)
+            # FIX 2: Changed ttl=0 to ttl=5
+            # This prevents spamming Google and getting the "Busy" error
+            df = conn.read(worksheet="Sheet1", ttl=5)
             return df
         except Exception as e:
             if i < max_retries - 1:
-                time.sleep(1)
+                time.sleep(2) # Increased wait time slightly
             else:
-                st.error("Google Sheets is busy. Please refresh the page.")
+                st.error("Google Sheets is busy. Please wait 10 seconds and refresh.")
                 st.stop()
 
 df = load_data_with_retry()
 
-# --- STRICT DATA CLEANING ---
+# --- AGGRESSIVE DATA CLEANING ---
 try:
     expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm', 'LastReset', 'Team']
     for col in expected_cols:
         if col not in df.columns:
             df[col] = ''
     
-    # 1. Fill NaNs with empty strings
     df = df.fillna('')
-    
-    # 2. Force conversion to string
     df['Name'] = df['Name'].astype(str)
-    
-    # 3. Strip whitespace
     df['Name'] = df['Name'].str.strip()
-    
-    # 4. Remove rows where Name is empty or 'nan'
-    df = df[df['Name'] != '']
-    df = df[df['Name'] != 'nan']
+    df['Name'] = df['Name'].replace(['', 'nan', 'None'], np.nan)
+    df = df.dropna(subset=['Name'])
 
 except Exception as e:
     st.error(f"Data structure error: {e}")
@@ -63,12 +59,10 @@ if not df.empty:
 else:
     last_reset_recorded = ""
 
-# Check if it is past 16:30 (4:30 PM) AND we haven't reset today yet
 is_past_cutoff = (current_sweden_time.hour > 16) or (current_sweden_time.hour == 16 and current_sweden_time.minute >= 30)
 
 if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
     for index, row in df.iterrows():
-        # Skip Long-Term / Vacation
         if row['IsLongTerm'] != "Yes":
             if row['Status'] != '❓ Not Updated':
                 df.at[index, 'Status'] = '❓ Not Updated'
@@ -85,14 +79,12 @@ if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
 # --- SIDEBAR: TEAM SELECTION ---
 st.sidebar.header("👥 Select Team")
 
-# Get unique teams, filter out blanks
 all_teams = [t for t in df['Team'].unique() if str(t).strip() != '' and str(t) != 'nan']
 if not all_teams:
     all_teams = ["No Teams Found"]
 
 selected_team = st.sidebar.selectbox("View Board For:", all_teams)
 
-# Filter data for the selected team
 team_df = df[df['Team'] == selected_team]
 team_members = team_df['Name'].tolist()
 
@@ -121,7 +113,6 @@ else:
         df.at[row_index, 'Last Updated'] = datetime.now(sweden_tz).strftime("%Y-%m-%d %H:%M")
         df.at[row_index, 'IsLongTerm'] = "Yes" if is_long_term else "No"
         
-        # If user has no team in sheet, assign current selected team
         if df.at[row_index, 'Team'] == '':
             df.at[row_index, 'Team'] = selected_team
 
@@ -167,8 +158,17 @@ if not team_df.empty:
     display_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
     styled_df = team_df[display_cols].style.applymap(highlight_status, subset=['Status'])
     
-    # REMOVED height=600 here 👇
-    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+    # FIX 1: DYNAMIC HEIGHT CALCULATION
+    # We count the rows and multiply by 35 pixels + 38 for the header
+    # This forces the table to be exactly as tall as the list of people
+    val_height = (len(team_df) + 1) * 35 + 3
+    
+    st.dataframe(
+        styled_df, 
+        use_container_width=True, 
+        hide_index=True,
+        height=val_height  # Applies the dynamic height
+    )
 else:
     st.info("No members in this team yet.")
 
