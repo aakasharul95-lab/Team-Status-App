@@ -134,19 +134,23 @@ st.markdown("---")
 col1, col2 = st.columns([8, 2])
 
 with col2:
-    # Initialize the click counter if it doesn't exist
+    # 1. Initialize the counter if it doesn't exist
     if 'egg_clicks' not in st.session_state:
         st.session_state['egg_clicks'] = 0
 
-    # The button looks like a version number
-    if st.button("v1.01", type="secondary"):
+    # 2. Define the counting function
+    def count_click():
         st.session_state['egg_clicks'] += 1
 
-    # Check if clicked 5 times
+    # 3. The Button (Note: we use 'on_click' here for better performance)
+    st.button("v1.01", on_click=count_click)
+
+    # 4. The Trigger
     if st.session_state['egg_clicks'] >= 5:
         st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
-        # Reset counter so it doesn't stay forever (optional)
+        # Reset the counter automatically so you can do it again
         st.session_state['egg_clicks'] = 0
+
 
 
 
