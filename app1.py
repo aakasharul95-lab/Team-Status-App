@@ -12,27 +12,26 @@ sweden_tz = pytz.timezone('Europe/Stockholm')
 
 st.set_page_config(page_title="Team Availability Board", layout="wide")
 
-# --- CONNECT TO GOOGLE SHEET (WITH CACHING TO FIX BUSY ERROR) ---
+# --- CONNECT TO GOOGLE SHEET ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_data_with_retry():
     max_retries = 3
     for i in range(max_retries):
         try:
-            # FIX 2: Changed ttl=0 to ttl=5
-            # This prevents spamming Google and getting the "Busy" error
-            df = conn.read(worksheet="Sheet1", ttl=5)
+            # FIX 2: We use ttl=0 here so updates are instant when we force a reload
+            df = conn.read(worksheet="Sheet1", ttl=0)
             return df
         except Exception as e:
             if i < max_retries - 1:
-                time.sleep(2) # Increased wait time slightly
+                time.sleep(1)
             else:
-                st.error("Google Sheets is busy. Please wait 10 seconds and refresh.")
+                st.error("Google Sheets is busy. Please wait a moment and refresh.")
                 st.stop()
 
 df = load_data_with_retry()
 
-# --- AGGRESSIVE DATA CLEANING ---
+# --- DATA CLEANING ---
 try:
     expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm', 'LastReset', 'Team']
     for col in expected_cols:
@@ -40,8 +39,7 @@ try:
             df[col] = ''
     
     df = df.fillna('')
-    df['Name'] = df['Name'].astype(str)
-    df['Name'] = df['Name'].str.strip()
+    df['Name'] = df['Name'].astype(str).str.strip()
     df['Name'] = df['Name'].replace(['', 'nan', 'None'], np.nan)
     df = df.dropna(subset=['Name'])
 
@@ -49,7 +47,7 @@ except Exception as e:
     st.error(f"Data structure error: {e}")
     st.stop()
 
-# --- 🤖 AUTOMATIC RESET LOGIC (16:30 / 4:30 PM) ---
+# --- 🤖 AUTOMATIC RESET LOGIC ---
 current_sweden_time = datetime.now(sweden_tz)
 today_str = current_sweden_time.strftime('%Y-%m-%d')
 
@@ -73,6 +71,7 @@ if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
         df.at[df.index[0], 'LastReset'] = today_str
         
     conn.update(worksheet="Sheet1", data=df)
+    st.cache_data.clear() # Clear cache to ensure fresh data
     st.toast("🧹 End of Day: Board automatically reset (16:30+)")
     st.rerun()
 
@@ -83,7 +82,19 @@ all_teams = [t for t in df['Team'].unique() if str(t).strip() != '' and str(t) !
 if not all_teams:
     all_teams = ["No Teams Found"]
 
-selected_team = st.sidebar.selectbox("View Board For:", all_teams)
+# Helper function to prevent reset on selection change
+if 'selected_team_idx' not in st.session_state:
+    st.session_state.selected_team_idx = 0
+
+def update_team_idx():
+    st.session_state.selected_team_idx = all_teams.index(st.session_state.team_select)
+
+selected_team = st.sidebar.selectbox(
+    "View Board For:", 
+    all_teams, 
+    key='team_select',
+    on_change=update_team_idx
+)
 
 team_df = df[df['Team'] == selected_team]
 team_members = team_df['Name'].tolist()
@@ -116,8 +127,11 @@ else:
         if df.at[row_index, 'Team'] == '':
             df.at[row_index, 'Team'] = selected_team
 
+        # FIX 2: Clear cache immediately before rerun
         conn.update(worksheet="Sheet1", data=df)
-        st.sidebar.success("Updated! Refreshing...")
+        st.cache_data.clear() 
+        st.sidebar.success("Updated!")
+        time.sleep(0.5) # Slight pause to let Google process
         st.rerun()
 
 # --- SIDEBAR: MANAGER RESET ---
@@ -133,7 +147,9 @@ if st.sidebar.checkbox("Show Reset Button"):
                     df.at[index, 'Reason/Comment'] = ''
                     df.at[index, 'Last Updated'] = ''
             conn.update(worksheet="Sheet1", data=df)
+            st.cache_data.clear()
             st.success(f"Reset complete for {selected_team}!")
+            time.sleep(0.5)
             st.rerun()
 
 # --- MAIN DASHBOARD ---
@@ -158,16 +174,12 @@ if not team_df.empty:
     display_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated']
     styled_df = team_df[display_cols].style.applymap(highlight_status, subset=['Status'])
     
-    # FIX 1: DYNAMIC HEIGHT CALCULATION
-    # We count the rows and multiply by 35 pixels + 38 for the header
-    # This forces the table to be exactly as tall as the list of people
     val_height = (len(team_df) + 1) * 35 + 3
-    
     st.dataframe(
         styled_df, 
         use_container_width=True, 
         hide_index=True,
-        height=val_height  # Applies the dynamic height
+        height=val_height
     )
 else:
     st.info("No members in this team yet.")
@@ -175,22 +187,25 @@ else:
 if st.button("🔄 Refresh Board"):
     st.rerun()
 
-# --- EASTER EGG: VERSION BUTTON ---
-st.markdown("---")
-col1, col2 = st.columns([8, 2])
+# --- EASTER EGG (FIXED JUMPING) ---
+# FIX 1: Using an empty container at the bottom keeps layout stable
+bottom_container = st.container()
+with bottom_container:
+    st.markdown("---")
+    col1, col2 = st.columns([8, 2])
+    
+    with col2:
+        if 'egg_clicks' not in st.session_state:
+            st.session_state['egg_clicks'] = 0
 
-with col2:
-    if 'egg_clicks' not in st.session_state:
-        st.session_state['egg_clicks'] = 0
+        def count_click():
+            st.session_state['egg_clicks'] += 1
 
-    def count_click():
-        st.session_state['egg_clicks'] += 1
+        st.button("v1.01", on_click=count_click)
 
-    st.button("v1.01", on_click=count_click)
-
-    if st.session_state['egg_clicks'] >= 5:
-        st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
-        st.session_state['egg_clicks'] = 0
+        if st.session_state['egg_clicks'] >= 5:
+            st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
+            st.session_state['egg_clicks'] = 0
 
 
 
