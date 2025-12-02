@@ -4,6 +4,7 @@ from datetime import datetime
 import pytz
 import time
 from streamlit_gsheets import GSheetsConnection
+import numpy as np # Adding numpy to help clean data
 
 # --- CONFIGURATION ---
 ADMIN_PASSWORD = "admin" 
@@ -29,26 +30,33 @@ def load_data_with_retry():
 
 df = load_data_with_retry()
 
-# --- CLEAN DATA & REMOVE EMPTY ROWS ---
+# --- AGGRESSIVE DATA CLEANING ---
 try:
     expected_cols = ['Name', 'Status', 'Reason/Comment', 'Last Updated', 'IsLongTerm', 'LastReset', 'Team']
     for col in expected_cols:
         if col not in df.columns:
             df[col] = ''
     
+    # 1. Replace real NaNs with empty strings
     df = df.fillna('')
-    
-    # STRICT FILTERING: Remove empty rows
+
+    # 2. Force conversion to string
     df['Name'] = df['Name'].astype(str)
+
+    # 3. Strip whitespace (removes " " and tab characters)
     df['Name'] = df['Name'].str.strip()
-    df = df[df['Name'].str.len() > 0]
-    df = df[df['Name'] != 'nan']
+
+    # 4. Replace empty strings or "nan" text with real NumPy NaNs so we can drop them easily
+    df['Name'] = df['Name'].replace(['', 'nan', 'None'], np.nan)
+
+    # 5. Drop any row where Name is NaN
+    df = df.dropna(subset=['Name'])
 
 except Exception as e:
     st.error(f"Data structure error: {e}")
     st.stop()
 
-# --- 🤖 AUTOMATIC RESET LOGIC (UPDATED TO 16:30 / 4:30 PM) ---
+# --- 🤖 AUTOMATIC RESET LOGIC (16:30 / 4:30 PM) ---
 current_sweden_time = datetime.now(sweden_tz)
 today_str = current_sweden_time.strftime('%Y-%m-%d')
 
@@ -58,21 +66,16 @@ if not df.empty:
 else:
     last_reset_recorded = ""
 
-# LOGIC: Check if it is past 16:30 (4:30 PM) AND we haven't reset today yet
-# hour > 16 means 17:00 (5 PM) or later
-# hour == 16 and minute >= 30 means 16:30 to 16:59
 is_past_cutoff = (current_sweden_time.hour > 16) or (current_sweden_time.hour == 16 and current_sweden_time.minute >= 30)
 
 if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
     for index, row in df.iterrows():
-        # Skip Long-Term / Vacation
         if row['IsLongTerm'] != "Yes":
             if row['Status'] != '❓ Not Updated':
                 df.at[index, 'Status'] = '❓ Not Updated'
                 df.at[index, 'Reason/Comment'] = ''
                 df.at[index, 'Last Updated'] = ''
     
-    # Mark reset as done for today
     if not df.empty:
         df.at[df.index[0], 'LastReset'] = today_str
         
@@ -83,12 +86,14 @@ if is_past_cutoff and last_reset_recorded != today_str and not df.empty:
 # --- SIDEBAR: TEAM SELECTION ---
 st.sidebar.header("👥 Select Team")
 
+# Get unique teams
 all_teams = [t for t in df['Team'].unique() if str(t).strip() != '' and str(t) != 'nan']
 if not all_teams:
     all_teams = ["No Teams Found"]
 
 selected_team = st.sidebar.selectbox("View Board For:", all_teams)
 
+# Filter data for the selected team
 team_df = df[df['Team'] == selected_team]
 team_members = team_df['Name'].tolist()
 
