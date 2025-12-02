@@ -129,6 +129,26 @@ st.dataframe(styled_df, use_container_width=True, height=600, hide_index=True)
 if st.button("🔄 Refresh Board"):
     st.rerun()
 
+# --- EASTER EGG: VERSION BUTTON ---
+st.markdown("---")
+col1, col2 = st.columns([8, 2])
+
+with col2:
+    # Initialize the click counter if it doesn't exist
+    if 'egg_clicks' not in st.session_state:
+        st.session_state['egg_clicks'] = 0
+
+    # The button looks like a version number
+    if st.button("v1.01", type="secondary"):
+        st.session_state['egg_clicks'] += 1
+
+    # Check if clicked 5 times
+    if st.session_state['egg_clicks'] >= 5:
+        st.error("🚨 Göran is a traitor for leaving SPAE! 🚨")
+        # Reset counter so it doesn't stay forever (optional)
+        st.session_state['egg_clicks'] = 0
+
+
 
 
 
